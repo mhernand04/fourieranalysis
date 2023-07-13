@@ -1,0 +1,144 @@
+package com.twon.soundview.gen;
+
+import static com.twon.soundview.media.MediaUtility.SAMPLE_RATE;
+import static com.twon.soundview.media.MediaUtility.convertDecimalToPercent;
+import static java.lang.Math.PI;
+import static java.lang.Math.cos;
+import static java.lang.Math.pow;
+import static java.lang.Math.sin;
+import static java.lang.Math.sqrt;
+
+import android.os.Build;
+import android.util.Log;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.ListIterator;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+public final class Fourier {
+
+    private final byte[] sampleArray;
+    private final int length;
+    private final Collection<FourierListener> listeners;
+    private int breadth;
+    private double cosineTermDouble;
+    private double sineTermDouble;
+    private static int progressCounter;
+    private static final String TAG = "Fourier";
+    private static final int FREQUENCY_START = 1,
+                            FREQUENCY_END = 1000;
+
+    public Fourier(byte[] sampleArray) {
+        this.sampleArray = sampleArray;
+        length = this.sampleArray.length;
+        listeners = new HashSet<>();
+        cosineTermDouble = 0.0;
+        sineTermDouble = 0.0;
+    }
+
+    public String scan(int breadth) {
+        beginScanning();
+        progressCounter = 0;
+
+        if (breadth == 0) breadth = 1;
+        this.breadth = breadth;
+
+        Log.d(TAG, "fourier scanning...");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            var list = IntStream
+                    .rangeClosed(FREQUENCY_START, FREQUENCY_END)
+                    .boxed()
+                    .collect(Collectors.toList());
+            Collections.shuffle(list);
+
+            return list
+                    .subList(0, this.breadth)
+                    .stream()
+                    .parallel()
+                    .collect(Collectors.summarizingDouble(this::singleDFT))
+                    .toString();
+        } else {
+            //average
+            List<Integer> list = new ArrayList<>();
+            for (int i = FREQUENCY_START; i <= FREQUENCY_END; i++) {
+                list.add(i);
+            }
+            Collections.shuffle(list);
+
+            ListIterator<Integer> listIterator = list
+                    .subList(0, this.breadth).listIterator();
+            double sum = 0.0;
+            while (listIterator.hasNext()) {
+                sum += singleDFT(listIterator.next());
+            }
+            return String.valueOf(sum/(double) this.breadth);
+        }
+    }
+
+    public void register(FourierListener listener) {
+        listeners.add(listener);
+    }
+
+    public void frequencyCompletes(int progress) {
+        for (FourierListener listener: listeners) {
+            listener.onFrequencyCompleted(progress);
+        }
+    }
+
+    public void beginScanning() {
+        for (FourierListener listener: listeners) {
+            listener.onFourierStart();
+        }
+    }
+
+    private Double singleDFT(int frequency) {
+        double normalizer = (SAMPLE_RATE/(double) length)*
+                (FREQUENCY_END/(double) breadth);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            IntStream
+                    .range(0, length)
+                    .parallel()
+                    .boxed()
+                    .forEach(i -> bothTerms(frequency, i, sampleArray[i]));
+        } else {
+            for (int i = 0; i < length; i++) {
+                cosineTermDouble += cosineTerm(frequency, i, sampleArray[i]);
+                sineTermDouble += sineTerm(frequency, i, sampleArray[i]);
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            CompletableFuture.runAsync(() ->
+                    frequencyCompletes(
+                            convertDecimalToPercent(
+                                    ++progressCounter/(double) breadth))
+            );
+        } else {
+            var thread = new Thread(() ->
+                    frequencyCompletes(convertDecimalToPercent(
+                            ++progressCounter/(double) breadth))
+            );
+            thread.start();
+        }
+        return sqrt(pow(cosineTermDouble, 2) + pow(sineTermDouble, 2))*normalizer;
+    }
+
+    private void bothTerms(int frequency, int sampleIndex, int sample) {
+        cosineTermDouble += cosineTerm(frequency, sampleIndex, sample);
+        sineTermDouble += sineTerm(frequency, sampleIndex, sample);
+    }
+
+    private Double cosineTerm(int frequency, int sampleIndex, int sample) {
+        return sample*(cos(2*PI*frequency*sampleIndex/length));
+    }
+
+    private Double sineTerm(int frequency, int sampleIndex, int sample) {
+        return sample*(sin(2*PI*frequency*sampleIndex/length));
+    }
+}
